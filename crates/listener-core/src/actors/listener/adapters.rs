@@ -203,6 +203,7 @@ pub(super) async fn spawn_rx_task(
         ElevenLabs => ElevenLabsAdapter,
         DashScope => DashScopeAdapter,
         Mistral => MistralAdapter,
+        ZoomScribe => owhisper_client::ZoomScribeAdapter,
         Meta => MetaAdapter,
         Xai => XaiAdapter,
         Nari => NariAdapter,

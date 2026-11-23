@@ -20,6 +20,7 @@ const DEFAULT_EXTERNAL_STT_MODELS: Record<string, string> = {
   soniox: "stt-rt-v5",
   elevenlabs: "scribe_v2",
   mistral: "voxtral-mini-2602",
+  zoom_scribe: "zoom-scribe-multilingual",
   meta: "muse-voice-transcribe-1.0",
   pyannote: "parakeet-tdt-0.6b-v3",
   wisprflow: "flow",

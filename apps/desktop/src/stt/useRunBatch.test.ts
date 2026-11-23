@@ -196,6 +196,7 @@ describe("getBatchProvider", () => {
     ["cartesia", "ink-2", "cartesia"],
     ["cohere", "cohere-transcribe-03-2026", "cohere"],
     ["mistral", "voxtral-mini-2602", "mistral"],
+    ["zoom_scribe", "zoom-scribe-multilingual", "zoom_scribe"],
     ["aws_transcribe", "amazon-transcribe", "aws_transcribe"],
     ["azure_speech", "fast-transcription", "azure_speech"],
     ["google_cloud", "latest_long", "google_cloud"],

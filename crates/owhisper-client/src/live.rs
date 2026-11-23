@@ -93,6 +93,7 @@ impl<A: RealtimeSttAdapter> ListenClientBuilder<A> {
         params: &ListenParams,
         channels: u8,
     ) -> Result<anlg_ws_client::client::ClientRequestBuilder, crate::Error> {
+        adapter.validate_configuration(self.get_api_base(), params, channels)?;
         if let Some(rate) = adapter.required_sample_rate()
             && params.sample_rate != rate
         {
@@ -123,10 +124,15 @@ impl<A: RealtimeSttAdapter> ListenClientBuilder<A> {
             for (name, value) in &self.extra_headers {
                 request = request.with_header(name, value);
             }
-        } else if let Some((header_name, header_value)) =
-            adapter.build_auth_header(self.api_key.as_deref())
-        {
-            request = request.with_header(header_name, header_value);
+        } else {
+            if let Some((header_name, header_value)) =
+                adapter.build_auth_header(self.api_key.as_deref())
+            {
+                request = request.with_header(header_name, header_value);
+            }
+            if let Some(protocol) = adapter.websocket_subprotocol() {
+                request = request.with_sub_protocol(protocol);
+            }
         }
 
         Ok(request)
@@ -636,7 +642,8 @@ fn websocket_client_with_keep_alive<A: RealtimeSttAdapter>(
     if let Some(event_type) = adapter.initial_response_type() {
         client = client
             .with_initial_response_type(event_type)
-            .with_initial_response_field(adapter.initial_response_field());
+            .with_initial_response_field(adapter.initial_response_field())
+            .with_initial_response_ignored_types(adapter.initial_response_ignored_types());
     }
 
     if let Some(connect_policy) = connect_policy {

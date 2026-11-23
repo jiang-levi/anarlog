@@ -845,6 +845,7 @@ export type BatchProvider =
   | "pyannote"
   | "dashscope"
   | "mistral"
+  | "zoom_scribe"
   | "meta"
   | "anarlog"
   | "am"

@@ -147,6 +147,7 @@ const DIRECT_BATCH_PROVIDERS: Set<TranscriptionParams["provider"]> = new Set([
   "gladia",
   "elevenlabs",
   "mistral",
+  "zoom_scribe",
   "meta",
   "pyannote",
   "aquavoice",

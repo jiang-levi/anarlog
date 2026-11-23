@@ -41,6 +41,9 @@ pub enum BatchProvider {
     Pyannote,
     DashScope,
     Mistral,
+    #[serde(rename = "zoom_scribe")]
+    #[strum(serialize = "zoom_scribe")]
+    ZoomScribe,
     Meta,
     #[serde(alias = "hyprnote")]
     Anarlog,
@@ -87,6 +90,7 @@ impl BatchProvider {
             Self::ElevenLabs => Some(AdapterKind::ElevenLabs),
             Self::Pyannote => Some(AdapterKind::Pyannote),
             Self::Mistral => Some(AdapterKind::Mistral),
+            Self::ZoomScribe => Some(AdapterKind::ZoomScribe),
             Self::Meta => Some(AdapterKind::Meta),
             Self::Anarlog => Some(AdapterKind::Anarlog),
             Self::AquaVoice => Some(AdapterKind::AquaVoice),

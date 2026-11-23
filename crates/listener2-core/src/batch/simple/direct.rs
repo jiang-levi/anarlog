@@ -78,6 +78,27 @@ pub(in crate::batch) async fn run_direct_batch_for_adapter_kind(
     }
 
     let limit = adapter_kind.batch_upload_limit(listen_params.model.as_deref());
+    if adapter_kind == AdapterKind::ZoomScribe
+        && !std::path::Path::new(&params.file_path)
+            .extension()
+            .and_then(|extension| extension.to_str())
+            .is_some_and(|extension| {
+                matches!(
+                    extension.to_ascii_lowercase().as_str(),
+                    "wav" | "mp3" | "m4a" | "mp4" | "webm"
+                )
+            })
+    {
+        let duration = audio_duration(&params.file_path);
+        return run_segmented_batch::<owhisper_client::ZoomScribeAdapter>(
+            "zoom_scribe",
+            params,
+            listen_params,
+            limit.expect("Zoom Scribe has an upload limit").max_duration,
+            direct_batch_timeout_for_audio(duration),
+        )
+        .await;
+    }
 
     dispatch_batch!(adapter_kind, params, listen_params, limit, {
         Argmax => ArgmaxAdapter,
@@ -95,6 +116,7 @@ pub(in crate::batch) async fn run_direct_batch_for_adapter_kind(
         ElevenLabs => ElevenLabsAdapter,
         Pyannote => PyannoteAdapter,
         Mistral => MistralAdapter,
+        ZoomScribe => owhisper_client::ZoomScribeAdapter,
         Meta => MetaAdapter,
         Anarlog => AnarlogAdapter,
         AquaVoice => AquaVoiceAdapter,
@@ -385,13 +407,13 @@ pub(super) async fn run_direct_batch_with_timeout<A: BatchSttAdapter>(
         let client = owhisper_client::BatchClient::<A>::builder()
             .api_base(params.base_url.clone())
             .api_key(params.api_key.clone())
-            .params(listen_params)
+            .params(listen_params.clone())
             .build();
 
         tracing::debug!("transcribing file");
         let response = match tokio::time::timeout(
             timeout,
-            transcribe_with_rate_limit_retry(&client, &params.file_path),
+            transcribe_with_compression_retry(&client, provider, &params, &listen_params),
         )
         .await
         {
@@ -428,6 +450,48 @@ pub(super) async fn run_direct_batch_with_timeout<A: BatchSttAdapter>(
     }
     .instrument(span)
     .await
+}
+
+async fn transcribe_with_compression_retry<A: BatchSttAdapter>(
+    client: &owhisper_client::BatchClient<A>,
+    provider: &str,
+    params: &BatchParams,
+    listen_params: &owhisper_interface::ListenParams,
+) -> Result<Response, owhisper_client::Error> {
+    let result = transcribe_with_rate_limit_retry(client, &params.file_path).await;
+    let rejected_audio = matches!(
+        &result,
+        Err(owhisper_client::Error::UnexpectedStatus { status, .. })
+            if matches!(status.as_u16(), 413 | 415)
+    );
+    if provider != "zoom_scribe" || !rejected_audio {
+        return result;
+    }
+
+    let duration = AdapterKind::ZoomScribe
+        .batch_upload_limit(None)
+        .expect("Zoom Scribe has an upload limit")
+        .max_duration;
+    let compressed = split_batch_upload(&params.file_path, duration, provider)
+        .await
+        .map_err(|_| {
+            owhisper_client::Error::AudioProcessing(
+                "Anarlog couldn't compress this recording for Zoom Scribe.".into(),
+            )
+        })?;
+    let mut retry_params = listen_params.clone();
+    retry_params.channels = 1;
+    let retry_client = owhisper_client::BatchClient::<A>::builder()
+        .api_base(params.base_url.clone())
+        .api_key(params.api_key.clone())
+        .params(retry_params)
+        .build();
+    let mut responses = Vec::with_capacity(compressed.paths().len());
+    for path in compressed.paths() {
+        responses
+            .push(transcribe_with_rate_limit_retry(&retry_client, &path.to_string_lossy()).await?);
+    }
+    Ok(merge_segment_responses(responses, duration))
 }
 
 async fn transcribe_with_rate_limit_retry<A: BatchSttAdapter>(

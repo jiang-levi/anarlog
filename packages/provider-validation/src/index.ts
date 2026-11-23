@@ -31,6 +31,7 @@ export function usesDeferredProviderAuthentication(
     type === "stt" &&
     [
       "custom",
+      "zoom_scribe",
       "inworld",
       "gradium",
       "modulate",

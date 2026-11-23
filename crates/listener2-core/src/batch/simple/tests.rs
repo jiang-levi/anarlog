@@ -900,3 +900,63 @@ fn collect_soniqo_channel_transcripts_errors_when_all_channels_fail() {
 
     assert_eq!(error, "Soniqo failed to transcribe all 2 audio channel(s).");
 }
+
+#[tokio::test]
+async fn zoom_scribe_compresses_unknown_containers_and_gateway_rejections() {
+    use axum::{
+        Json,
+        response::{Html, IntoResponse},
+        routing::post,
+    };
+    let app = Router::new().route(
+        "/transcribe",
+        post(|Json(payload): Json<serde_json::Value>| async move {
+            let audio = payload["file"].as_str().unwrap();
+            if audio.starts_with("data:audio/wav;base64,") {
+                return (StatusCode::PAYLOAD_TOO_LARGE, Html("<html>413</html>")).into_response();
+            }
+            assert!(audio.starts_with("data:audio/mpeg;base64,"));
+            assert_eq!(payload["config"]["channel_separation"], false);
+            Json(
+                serde_json::json!({"result":{"text_display":"Converted recording.","segments":[
+                    {"start":0.0,"end":1.0,"text":"Converted recording.","speaker":"Speaker 1"}
+                ]}}),
+            )
+            .into_response()
+        }),
+    );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let address = listener.local_addr().unwrap();
+    let server = tokio::spawn(async move {
+        axum::serve(listener, app).await.unwrap();
+    });
+    for suffix in ["", ".wav"] {
+        let source = tempfile::Builder::new().suffix(suffix).tempfile().unwrap();
+        write_test_wav_samples(source.path(), TARGET_SAMPLE_RATE as usize);
+        let output = run_direct_batch_for_adapter_kind(
+            owhisper_client::AdapterKind::ZoomScribe,
+            BatchParams {
+                session_id: "zoom-conversion".into(),
+                provider: super::super::BatchProvider::ZoomScribe,
+                file_path: source.path().to_string_lossy().into_owned(),
+                model: Some("zoom-scribe-multilingual".into()),
+                base_url: format!("http://{address}"),
+                api_key: "test-key".into(),
+                languages: vec![],
+                keywords: vec![],
+                num_speakers: None,
+                min_speakers: None,
+                max_speakers: None,
+                known_speakers: vec![],
+            },
+            owhisper_interface::ListenParams::default(),
+        )
+        .await
+        .unwrap();
+        let alternative = &output.response.results.channels[0].alternatives[0];
+        assert_eq!(alternative.transcript, "Converted recording.");
+        assert_eq!(alternative.words[0].channel, 2);
+        assert!(source.path().exists());
+    }
+    server.abort();
+}

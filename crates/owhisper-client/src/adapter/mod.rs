@@ -45,6 +45,7 @@ mod whispercpp;
 mod wisprflow;
 mod xai;
 mod zai;
+mod zoom_scribe;
 
 pub use alebex::*;
 pub use amazon_bedrock::*;
@@ -85,6 +86,7 @@ pub use whispercpp::*;
 pub use wisprflow::*;
 pub use xai::*;
 pub use zai::*;
+pub use zoom_scribe::*;
 
 use std::collections::{BTreeSet, HashSet};
 use std::future::Future;
@@ -180,6 +182,15 @@ pub fn documented_language_codes_batch() -> Vec<String> {
 }
 
 pub trait RealtimeSttAdapter: Clone + Default + Send + Sync + 'static {
+    fn validate_configuration(
+        &self,
+        _api_base: &str,
+        _params: &ListenParams,
+        _channels: u8,
+    ) -> Result<(), Error> {
+        Ok(())
+    }
+
     fn fork_session(&self) -> Self {
         self.clone()
     }
@@ -192,6 +203,14 @@ pub trait RealtimeSttAdapter: Clone + Default + Send + Sync + 'static {
 
     fn initial_response_field(&self) -> &'static str {
         "type"
+    }
+
+    fn initial_response_ignored_types(&self) -> &'static [&'static str] {
+        &[]
+    }
+
+    fn websocket_subprotocol(&self) -> Option<&'static str> {
+        None
     }
 
     fn required_sample_rate(&self) -> Option<u32> {
@@ -536,6 +555,8 @@ pub enum AdapterKind {
     DashScope,
     #[strum(serialize = "mistral")]
     Mistral,
+    #[strum(serialize = "zoom_scribe")]
+    ZoomScribe,
     #[strum(serialize = "meta")]
     Meta,
     #[strum(serialize = "pyannote")]
@@ -591,10 +612,14 @@ impl AdapterKind {
                             | Self::Alebex
                             | Self::Nvidia
                             | Self::AmazonBedrock
+                            | Self::ZoomScribe
                     )
                 })
         {
             return kind;
+        }
+        if host_matches(base_url, |host| host == "api.zoom.us") {
+            return Self::ZoomScribe;
         }
         if host_matches(base_url, |host| {
             host == "inworld.ai" || host.ends_with(".inworld.ai")
@@ -680,6 +705,9 @@ impl AdapterKind {
             Self::GoogleGenerativeAi => (20 * 1024 * 1024, Duration::from_secs(15 * 60)),
             Self::Zai => (OPENAI_COMPATIBLE_MAX_UPLOAD_BYTES, Duration::from_secs(25)),
             Self::SiliconFlow => (50 * 1024 * 1024, Duration::from_secs(50 * 60)),
+            // Base64 and JSON must fit in 50 MiB. Hour-long mono MP3 segments
+            // at 64 kbps stay below that bound even after encoding.
+            Self::ZoomScribe => (36 * 1024 * 1024, Duration::from_secs(60 * 60)),
             // Six-minute API limit; PCM16 mono at 16 kHz also stays below 25 MB.
             Self::WisprFlow => (u64::MAX, Duration::from_secs(350)),
             // Pre-recorded requests cap at 250 MB and time out after 10 minutes,
@@ -729,6 +757,7 @@ impl AdapterKind {
             | Self::ElevenLabs
             | Self::DashScope
             | Self::Mistral
+            | Self::ZoomScribe
             | Self::Meta
             | Self::Xai
             | Self::Nari
@@ -769,6 +798,7 @@ impl AdapterKind {
             Self::DashScope => DashScopeAdapter::language_support_live(languages),
             Self::Argmax => ArgmaxAdapter::language_support_live(languages, model),
             Self::Mistral => MistralAdapter::language_support_live(languages),
+            Self::ZoomScribe => ZoomScribeAdapter::language_support_live(languages, model),
             Self::Meta => MetaAdapter::language_support_live(languages),
             Self::Pyannote => LanguageSupport::NotSupported,
             Self::Cohere => LanguageSupport::NotSupported,
@@ -816,6 +846,7 @@ impl AdapterKind {
             Self::DashScope => DashScopeAdapter::language_support_batch(languages),
             Self::Argmax => ArgmaxAdapter::language_support_batch(languages, model),
             Self::Mistral => MistralAdapter::language_support_batch(languages),
+            Self::ZoomScribe => ZoomScribeAdapter::language_support_batch(languages, model),
             Self::Meta => MetaAdapter::language_support_batch(languages),
             Self::Pyannote => PyannoteAdapter::language_support_batch(languages, model),
             Self::Cohere => CohereAdapter::language_support_batch(languages, model),

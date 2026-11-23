@@ -116,6 +116,7 @@ async fn dispatch(
         Gradium => GradiumAdapter,
         Inworld => InworldAdapter,
         Mistral => MistralAdapter,
+        ZoomScribe => owhisper_client::ZoomScribeAdapter,
         Modulate => ModulateAdapter,
         OpenAI => OpenAIAdapter,
         Nari => NariAdapter,

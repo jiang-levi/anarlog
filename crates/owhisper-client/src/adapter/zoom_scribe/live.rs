@@ -1,0 +1,151 @@
+use anlg_ws_client::client::Message;
+use owhisper_interface::{ListenParams, stream::StreamResponse};
+use serde_json::{Value, json};
+
+use super::{Session, ZoomScribeAdapter, config, endpoint, speaker};
+use crate::adapter::{RealtimeSttAdapter, segment};
+
+impl RealtimeSttAdapter for ZoomScribeAdapter {
+    fn validate_configuration(
+        &self,
+        base: &str,
+        params: &ListenParams,
+        channels: u8,
+    ) -> Result<(), crate::Error> {
+        endpoint(base, "live")?;
+        config(params, true)?;
+        if channels != 1 {
+            return Err(crate::Error::provider_configuration(
+                "zoom_scribe",
+                "Live requires one mono stream per connection",
+            ));
+        }
+        Ok(())
+    }
+
+    fn fork_session(&self) -> Self {
+        Self::default()
+    }
+
+    fn provider_name(&self) -> &'static str {
+        "zoom_scribe"
+    }
+
+    fn initial_response_type(&self) -> Option<&'static str> {
+        Some("session.updated")
+    }
+
+    fn initial_response_ignored_types(&self) -> &'static [&'static str] {
+        &["session.created"]
+    }
+
+    fn websocket_subprotocol(&self) -> Option<&'static str> {
+        Some("live-asr")
+    }
+
+    fn required_sample_rate(&self) -> Option<u32> {
+        Some(16_000)
+    }
+
+    fn is_supported_languages(
+        &self,
+        languages: &[anlg_language::Language],
+        model: Option<&str>,
+    ) -> bool {
+        Self::language_support_live(languages, model).is_supported()
+    }
+
+    fn supports_native_multichannel(&self) -> bool {
+        false
+    }
+
+    fn build_ws_url(&self, base: &str, _: &ListenParams, _: u8) -> url::Url {
+        let mut url = endpoint(base, "live").expect("invalid Zoom Scribe base URL");
+        let scheme = if matches!(url.scheme(), "http" | "ws") {
+            "ws"
+        } else {
+            "wss"
+        };
+        url.set_scheme(scheme)
+            .expect("invalid Zoom Scribe URL scheme");
+        url
+    }
+
+    fn build_auth_header(&self, key: Option<&str>) -> Option<(&'static str, String)> {
+        key.map(|key| ("Authorization", format!("Bearer {key}")))
+    }
+
+    fn keep_alive_message(&self) -> Option<Message> {
+        None
+    }
+
+    fn finalize_message(&self) -> Message {
+        segment::message(json!({"type": "session.close"}))
+    }
+
+    fn initial_message(&self, _: Option<&str>, params: &ListenParams, _: u8) -> Option<Message> {
+        *self.session.lock().unwrap_or_else(|e| e.into_inner()) = Session::default();
+        Some(segment::message(json!({
+            "type": "session.update",
+            "config": config(params, true).ok()?,
+            "audio": {"format": "pcm16"},
+            "outputs": {"text_polishing": {"enabled": false}},
+        })))
+    }
+
+    fn audio_to_message(&self, audio: bytes::Bytes) -> Message {
+        self.session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .samples += audio.len() as u64 / 2;
+        Message::Binary(audio)
+    }
+
+    fn parse_response(&self, raw: &str) -> Vec<StreamResponse> {
+        let Ok(value) = serde_json::from_str::<Value>(raw) else {
+            return vec![];
+        };
+        let mut session = self.session.lock().unwrap_or_else(|e| e.into_inner());
+        match value["type"].as_str().unwrap_or_default() {
+            "input_audio_buffer.speech_started" => {
+                if let Some(start) = value["audio_start_ms"].as_f64() {
+                    session.start = start / 1000.0;
+                }
+                vec![]
+            }
+            "transcription.delta" | "transcription.completed" => {
+                let is_final = value["type"] == "transcription.completed";
+                let field = if is_final { "transcript" } else { "delta" };
+                let Some(text) = value[field].as_str() else {
+                    return vec![];
+                };
+                let start = value["audio_start_ms"]
+                    .as_f64()
+                    .map(|ms| ms / 1000.0)
+                    .unwrap_or(session.start);
+                let end = value["audio_end_ms"]
+                    .as_f64()
+                    .map(|ms| ms / 1000.0)
+                    .unwrap_or(session.samples as f64 / 16_000.0)
+                    .max(start);
+                if is_final {
+                    session.start = end;
+                    session.end = end;
+                }
+                let mut response =
+                    segment::response(text, start, end, is_final, speaker(&value["speaker"]));
+                if let StreamResponse::TranscriptResponse { channel, .. } = &mut response
+                    && let Some(language) = value["language"].as_str()
+                {
+                    channel.alternatives[0].languages = vec![language.into()];
+                }
+                vec![response]
+            }
+            "session.closed" => vec![segment::finished(session.end)],
+            "error" if value["error"]["fatal"] != false => {
+                vec![segment::error("zoom_scribe", &value["error"])]
+            }
+            _ => vec![],
+        }
+    }
+}

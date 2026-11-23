@@ -74,6 +74,7 @@ pub struct WebSocketClient {
     on_retry: Option<WebSocketRetryCallback>,
     initial_response_type: Option<&'static str>,
     initial_response_field: &'static str,
+    initial_response_ignored_types: &'static [&'static str],
 }
 
 impl WebSocketClient {
@@ -85,6 +86,7 @@ impl WebSocketClient {
             on_retry: None,
             initial_response_type: None,
             initial_response_field: "type",
+            initial_response_ignored_types: &[],
         }
     }
 
@@ -104,6 +106,11 @@ impl WebSocketClient {
 
     pub fn with_initial_response_field(mut self, field: &'static str) -> Self {
         self.initial_response_field = field;
+        self
+    }
+
+    pub fn with_initial_response_ignored_types(mut self, types: &'static [&'static str]) -> Self {
+        self.initial_response_ignored_types = types;
         self
     }
 
@@ -160,6 +167,11 @@ impl WebSocketClient {
                             };
                             if actual.and_then(|v| v.as_str()) == Some(expected) {
                                 return Ok::<_, crate::Error>(());
+                            }
+                            if actual.and_then(|v| v.as_str()).is_some_and(|kind| {
+                                self.initial_response_ignored_types.contains(&kind)
+                            }) {
+                                continue;
                             }
                             return Err(crate::Error::InvalidRequest {
                                 message: format!(

@@ -150,6 +150,10 @@ const displayModelId = (model: string): string => {
     return "Scribe V2";
   }
 
+  if (model === "zoom-scribe-multilingual") return "Zoom Scribe Multilingual";
+  if (model === "zoom-scribe-en") return "Zoom Scribe English";
+  if (model === "zoom-scribe-en-pro") return "Zoom Scribe English Pro";
+
   if (model === "whisper-1") {
     return "Whisper 1";
   }
@@ -1141,6 +1145,33 @@ const _PROVIDERS = [
   },
   {
     disabled: false,
+    id: "zoom_scribe",
+    displayName: "Zoom Scribe",
+    badge: null,
+    icon: (
+      <ProviderBrandImage
+        src="/assets/zoom-icon.svg"
+        alt="Zoom Scribe"
+        preserveColor
+      />
+    ),
+    baseUrl: "https://api.zoom.us/v2/aiservices/scribe",
+    models: [
+      "zoom-scribe-multilingual",
+      "zoom-scribe-en",
+      "zoom-scribe-en-pro",
+    ],
+    requirements: [{ kind: "requires_config", fields: ["api_key"] }],
+    links: {
+      models: {
+        label: "Available models",
+        url: "https://developers.zoom.us/docs/ai-services/scribe/speech-configuration/",
+      },
+      setup: { label: "API setup", url: "https://zoom.ai/" },
+    },
+  },
+  {
+    disabled: false,
     id: "mistral",
     displayName: "Mistral",
     badge: null,
@@ -1266,6 +1297,7 @@ const PROVIDER_ORDER = [
   "speechmatics",
   "groq",
   "mistral",
+  "zoom_scribe",
   "revai",
   "gladia",
   "cartesia",

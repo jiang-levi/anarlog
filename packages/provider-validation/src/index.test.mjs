@@ -489,6 +489,7 @@ test("native streaming providers validate input without requiring a model catalo
     "inworld",
     "gradium",
     "amazon_bedrock",
+    "zoom_scribe",
     "modulate",
     "alebex",
     "nvidia",

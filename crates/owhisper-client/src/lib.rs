@@ -31,9 +31,9 @@ pub use adapter::{
     LanguageSupport, MetaAdapter, MistralAdapter, ModulateAdapter, NariAdapter, NvidiaAdapter,
     OpenAIAdapter, OpenRouterAdapter, PyannoteAdapter, RealtimeSttAdapter, RevAiAdapter,
     SiliconFlowAdapter, SmallestAIAdapter, SonioxAdapter, SpeechmaticsAdapter, TogetherAdapter,
-    WhisperCppAdapter, WisprFlowAdapter, XaiAdapter, ZaiAdapter, append_provider_param,
-    documented_language_codes_batch, documented_language_codes_live, is_anarlog_proxy,
-    is_local_host, normalize_languages,
+    WhisperCppAdapter, WisprFlowAdapter, XaiAdapter, ZaiAdapter, ZoomScribeAdapter,
+    append_provider_param, documented_language_codes_batch, documented_language_codes_live,
+    is_anarlog_proxy, is_local_host, normalize_languages,
 };
 pub use adapter::{StreamingBatchEvent, StreamingBatchStream};
 

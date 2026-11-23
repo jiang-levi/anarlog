@@ -184,6 +184,7 @@ async fn dispatch(
         GoogleGenerativeAi => GoogleGenerativeAiAdapter,
         Groq => GroqAdapter,
         Mistral => MistralAdapter,
+        ZoomScribe => owhisper_client::ZoomScribeAdapter,
         OpenAI => OpenAIAdapter,
         OpenRouter => OpenRouterAdapter,
         Pyannote => PyannoteAdapter,

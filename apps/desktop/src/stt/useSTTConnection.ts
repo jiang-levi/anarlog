@@ -178,6 +178,7 @@ export const useSTTConnection = () => {
         "alebex",
         "nvidia",
         "amazon_bedrock",
+        "zoom_scribe",
       ].includes(current_stt_provider)
     ) {
       const url = new URL(baseUrl);

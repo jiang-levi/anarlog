@@ -143,6 +143,7 @@ pub fn suggest_providers_for_languages_live(languages: &[anlg_language::Language
         AdapterKind::ElevenLabs,
         AdapterKind::DashScope,
         AdapterKind::Mistral,
+        AdapterKind::ZoomScribe,
         AdapterKind::Meta,
         AdapterKind::Xai,
         AdapterKind::Nari,
@@ -183,6 +184,7 @@ pub fn suggest_providers_for_languages_batch(languages: &[anlg_language::Languag
         AdapterKind::ElevenLabs,
         AdapterKind::DashScope,
         AdapterKind::Mistral,
+        AdapterKind::ZoomScribe,
         AdapterKind::Meta,
         AdapterKind::Cohere,
         AdapterKind::AwsTranscribe,
@@ -231,6 +233,13 @@ mod tests {
             ("soniqo", "soniqo-omnilingual", &["fr"], true),
             ("anarlog", "cloud", &["fr"], true),
             ("mistral", "voxtral-mini-2602", &["de-DE", "en-US"], true),
+            (
+                "zoom_scribe",
+                "zoom-scribe-multilingual",
+                &["de-DE", "ko-KR"],
+                true,
+            ),
+            ("zoom_scribe", "zoom-scribe-en", &["zh"], false),
             ("hyprnote", "cloud", &["ko"], true),
         ];
 

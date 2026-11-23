@@ -126,6 +126,9 @@ async fn run(
         "smallestai" => listen::<SmallestAIAdapter>(config, receiver, updates).await,
         "fireworks" => listen::<FireworksAdapter>(config, receiver, updates).await,
         "mistral" => listen::<MistralAdapter>(config, receiver, updates).await,
+        "zoom_scribe" => {
+            listen::<owhisper_client::ZoomScribeAdapter>(config, receiver, updates).await
+        }
         "xai" => listen::<XaiAdapter>(config, receiver, updates).await,
         "argmax" => listen::<ArgmaxAdapter>(config, receiver, updates).await,
         "nari" => listen::<NariAdapter>(config, receiver, updates).await,
