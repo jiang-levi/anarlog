@@ -34,6 +34,10 @@ import {
 import { type ProviderRequirement } from "~/settings/ai/shared/eligibility";
 import { sortProviders } from "~/settings/ai/shared/sort-providers";
 import { localSttQueries } from "~/stt/useLocalSttModel";
+import {
+  getZoomScribeLanguage,
+  ZOOM_SCRIBE_LANGUAGES,
+} from "~/stt/zoom-scribe";
 
 export { localSttQueries as sttModelQueries };
 
@@ -151,7 +155,7 @@ const displayModelId = (model: string): string => {
   }
 
   if (model === "zoom-scribe-multilingual") return "Zoom Scribe Multilingual";
-  if (model === "zoom-scribe-en") return "Zoom Scribe English";
+  if (getZoomScribeLanguage(model)) return "Zoom Scribe";
   if (model === "zoom-scribe-en-pro") return "Zoom Scribe English Pro";
 
   if (model === "whisper-1") {
@@ -1158,7 +1162,7 @@ const _PROVIDERS = [
     baseUrl: "https://api.zoom.us/v2/aiservices/scribe",
     models: [
       "zoom-scribe-multilingual",
-      "zoom-scribe-en",
+      ...ZOOM_SCRIBE_LANGUAGES.map((language) => `zoom-scribe-${language}`),
       "zoom-scribe-en-pro",
     ],
     requirements: [{ kind: "requires_config", fields: ["api_key"] }],

@@ -23,6 +23,7 @@ import { useConfigValue } from "~/shared/config";
 import { useListener } from "~/stt/contexts";
 import { useRunBatch } from "~/stt/useRunBatch";
 import { useSTTConnection } from "~/stt/useSTTConnection";
+import { getZoomScribeTranscriptionLanguages } from "~/stt/zoom-scribe";
 export { useDictationStatus } from "./state";
 
 let lifecycle: Promise<void> = Promise.resolve();
@@ -184,7 +185,11 @@ function ActiveDictation({
                   model: conn.model,
                   channels: 1,
                   sample_rate: 16000,
-                  languages: languages || [],
+                  languages: getZoomScribeTranscriptionLanguages(
+                    conn.provider,
+                    conn.model,
+                    languages || [],
+                  ),
                   keywords: dictionary || [],
                   num_speakers: 1,
                   min_speakers: null,

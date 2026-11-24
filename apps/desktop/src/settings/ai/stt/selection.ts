@@ -3,6 +3,7 @@ import {
   getDefaultSttModel,
   getPreferredProviderModel,
 } from "~/stt/model-selection";
+import { getZoomScribeTranscriptionLanguages } from "~/stt/zoom-scribe";
 
 export { getDefaultSttModel, getPreferredProviderModel };
 
@@ -10,8 +11,13 @@ export async function getLanguageSupportIssue(
   mainLanguage: string | null | undefined,
   spokenLanguages: readonly string[] | null | undefined,
   isSupported: (languages: readonly string[]) => Promise<boolean>,
+  selection?: { provider?: string; model?: string },
 ) {
-  const languages = getTranscriptionLanguages(mainLanguage, spokenLanguages);
+  const languages = getZoomScribeTranscriptionLanguages(
+    selection?.provider,
+    selection?.model,
+    getTranscriptionLanguages(mainLanguage, spokenLanguages),
+  );
   if (await isSupported(languages)) {
     return null;
   }

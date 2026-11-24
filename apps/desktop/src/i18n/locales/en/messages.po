@@ -5270,6 +5270,7 @@ msgstr "Select default sharing"
 msgid "Select folder"
 msgstr "Select folder"
 
+#: src/settings/ai/stt/select.tsx
 #: src/settings/general/main-language.tsx
 msgid "Select language"
 msgstr "Select language"

@@ -4,6 +4,8 @@ import {
   type TranscriptionMode,
 } from "@anlg/plugin-transcription";
 
+import { getZoomScribeTranscriptionLanguages } from "./zoom-scribe";
+
 type LiveTranscriptionConfig = {
   languages: string[];
   omittedLanguages?: string[];
@@ -403,6 +405,7 @@ export async function getLiveTranscriptionConfig({
   model?: string | null;
   languages: readonly string[];
 }): Promise<LiveTranscriptionConfig> {
+  languages = getZoomScribeTranscriptionLanguages(provider, model, languages);
   if (isLocalFileSttModel(provider, model)) {
     return {
       languages: [...languages],

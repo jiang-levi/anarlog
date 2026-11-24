@@ -1048,6 +1048,31 @@ describe("useRunBatch", () => {
     expect(deleteProcessedAudioForRetentionMock).not.toHaveBeenCalled();
   });
 
+  test("sends the Zoom dropdown language even when app languages differ", async () => {
+    useSTTConnectionMock.mockReturnValue({
+      conn: {
+        provider: "zoom_scribe",
+        model: "zoom-scribe-zh",
+        baseUrl:
+          "https://api.zoom.us/v2/aiservices/scribe?provider=zoom_scribe",
+        apiKey: "test-key",
+      },
+    });
+    startTranscriptionMock.mockResolvedValue(undefined);
+    const { result } = renderHook(() => useRunBatch("session-1"));
+    await act(async () => {
+      await result.current("/tmp/session.wav");
+    });
+    expect(startTranscriptionMock).toHaveBeenCalledWith(
+      expect.objectContaining({
+        provider: "zoom_scribe",
+        model: "zoom-scribe-zh",
+        languages: ["zh"],
+      }),
+      expect.any(Object),
+    );
+  });
+
   test("passes selected transcription languages to batch transcription", async () => {
     useSTTConnectionMock.mockReturnValue({
       conn: {

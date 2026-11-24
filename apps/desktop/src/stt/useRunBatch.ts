@@ -18,6 +18,7 @@ import { completeCaptureTranscript } from "./capture-completion";
 import { useListener } from "./contexts";
 import { persistTranscriptWrite } from "./persist-retry";
 import { useSTTConnection } from "./useSTTConnection";
+import { getZoomScribeTranscriptionLanguages } from "./zoom-scribe";
 
 import { useAuth } from "~/auth";
 import { useBillingAccess } from "~/auth/billing-context";
@@ -338,13 +339,16 @@ export const useRunBatch = (sessionId: string) => {
         );
       }
 
-      const languages =
-        options?.languages ??
-        getTranscriptionLanguages(aiLanguage, spokenLanguages);
       const currentPlatform = platform();
       const currentArch = arch();
       const selectedProviderId = options?.provider ?? conn?.provider;
       const selectedModel = options?.model ?? conn?.model;
+      const languages = getZoomScribeTranscriptionLanguages(
+        selectedProviderId,
+        selectedModel,
+        options?.languages ??
+          getTranscriptionLanguages(aiLanguage, spokenLanguages),
+      );
       const selectedProvider =
         selectedProviderId && selectedModel
           ? getBatchProvider(selectedProviderId, selectedModel)

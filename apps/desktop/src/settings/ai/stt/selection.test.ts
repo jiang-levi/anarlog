@@ -253,6 +253,17 @@ describe("getDefaultSttSelection", () => {
 });
 
 describe("getLanguageSupportIssue", () => {
+  test("checks the explicit Zoom model language instead of warning about unrelated app languages", async () => {
+    expect(
+      await getLanguageSupportIssue(
+        "en",
+        ["ja"],
+        async (languages) => languages.length === 1 && languages[0] === "zh",
+        { provider: "zoom_scribe", model: "zoom-scribe-zh" },
+      ),
+    ).toBeNull();
+  });
+
   test("returns the languages the model cannot transcribe", async () => {
     const issue = await getLanguageSupportIssue(
       "en",

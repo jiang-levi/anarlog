@@ -5270,6 +5270,7 @@ msgstr ""
 msgid "Select folder"
 msgstr ""
 
+#: src/settings/ai/stt/select.tsx
 #: src/settings/general/main-language.tsx
 msgid "Select language"
 msgstr "حدد اللغة"

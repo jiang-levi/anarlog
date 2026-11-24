@@ -101,9 +101,13 @@ import {
   getDefaultSttModel,
   getPreferredProviderModel,
 } from "~/stt/model-selection";
+import {
+  getZoomScribeLanguage,
+  ZOOM_SCRIBE_LANGUAGES,
+} from "~/stt/zoom-scribe";
 
 export function SelectProviderAndModel() {
-  const { t } = useLingui();
+  const { t, i18n } = useLingui();
   const { current_stt_provider, current_stt_model } = useConfigValues([
     "current_stt_provider",
     "current_stt_model",
@@ -184,6 +188,18 @@ export function SelectProviderAndModel() {
   const selectedModel = selectedModels.find(
     (model) => model.id === displayedSttModel,
   );
+  const zoomLanguage =
+    visibleProvider === "zoom_scribe"
+      ? getZoomScribeLanguage(displayedSttModel)
+      : undefined;
+  const visibleModels =
+    visibleProvider === "zoom_scribe"
+      ? selectedModels.filter(
+          (model) =>
+            !getZoomScribeLanguage(model.id) ||
+            model.id === (zoomLanguage ? displayedSttModel : "zoom-scribe-en"),
+        )
+      : selectedModels;
   const providerOptions = getConfiguredProviders(
     selectableProviders,
     configuredProviders,
@@ -386,9 +402,9 @@ export function SelectProviderAndModel() {
                 )}
               </SelectTrigger>
               <SelectContent align="end">
-                {selectedModels.map((model, i) => {
+                {visibleModels.map((model, i) => {
                   const prevCategory =
-                    i > 0 ? selectedModels[i - 1].category : null;
+                    i > 0 ? visibleModels[i - 1].category : null;
                   const showHeader =
                     model.category && model.category !== prevCategory;
                   const categoryLabel = showHeader
@@ -415,6 +431,31 @@ export function SelectProviderAndModel() {
                     </span>
                   );
                 })}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+        {zoomLanguage && (
+          <div className="min-w-0 flex-2">
+            <Select
+              value={zoomLanguage}
+              onValueChange={(language) =>
+                handleModelChange(`zoom-scribe-${language}`)
+              }
+            >
+              <SelectTrigger
+                aria-label={t`Select language`}
+                corners={{ radius: 18, smoothing: 0 }}
+                className="bg-card rounded-[18px] shadow-none"
+              >
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent align="end">
+                {ZOOM_SCRIBE_LANGUAGES.map((language) => (
+                  <SelectItem key={language} value={language}>
+                    {getBaseLanguageDisplayName(language, i18n.locale)}
+                  </SelectItem>
+                ))}
               </SelectContent>
             </Select>
           </div>
@@ -612,6 +653,7 @@ function useTranscriptionLanguageWarning() {
         ai_language,
         spoken_languages,
         isSupported,
+        { provider: current_stt_provider, model: selectedSttModel },
       );
     },
     enabled: isConfigured && liveSupport.data !== undefined && !!ai_language,

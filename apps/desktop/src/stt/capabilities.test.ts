@@ -377,6 +377,20 @@ describe("getOnDeviceTranscriptionConfig", () => {
 describe("getLiveTranscriptionConfig", () => {
   test.each([
     {
+      provider: "zoom_scribe",
+      model: "zoom-scribe-zh",
+      languages: ["en", "ja"],
+      expected: { languages: ["zh"], transcriptionMode: undefined },
+      checksLiveLanguages: false,
+    },
+    {
+      provider: "zoom_scribe",
+      model: "zoom-scribe-multilingual",
+      languages: ["en", "zh"],
+      expected: { languages: ["en", "zh"], transcriptionMode: undefined },
+      checksLiveLanguages: true,
+    },
+    {
       provider: "local_file",
       model: "local-file",
       languages: ["en", "ko"],
