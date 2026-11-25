@@ -15,6 +15,8 @@ use crate::Error;
 
 const DEFAULT_BASE: &str = "https://api.zoom.us/v2/aiservices/scribe";
 const DEFAULT_MODEL: &str = "zoom-scribe-multilingual";
+// Keep in sync with apps/desktop/src/stt/zoom-scribe.ts. Korean is
+// available through Multilingual; a standalone ko model is not verified.
 const LOCALES: &[(&str, &str)] = &[
     ("en", "en-US"),
     ("ar", "ar-SA"),
@@ -30,6 +32,8 @@ const LOCALES: &[(&str, &str)] = &[
 
 #[derive(Default)]
 struct Session {
+    model: String,
+    closing: bool,
     samples: u64,
     start: f64,
     end: f64,
@@ -41,16 +45,21 @@ pub struct ZoomScribeAdapter {
 }
 
 impl ZoomScribeAdapter {
+    /// The dictation UI also joins completed turns; apply the same model-specific rules there.
+    pub fn normalize_transcript(text: &str, model: &str) -> String {
+        clean_text(text, model)
+    }
+
     pub fn language_support_live(languages: &[Language], model: Option<&str>) -> LanguageSupport {
         let model = resolve_model(model);
         let supported = supported_model(model)
-            && languages.iter().all(|lang| {
-                locale(lang).is_some()
-                    && (model == DEFAULT_MODEL
-                        || model.strip_prefix("zoom-scribe-") == Some(lang.iso639_code())
-                        || (model == "zoom-scribe-en-pro" && lang.iso639_code() == "en"))
-            })
-            && (model == DEFAULT_MODEL || languages.len() <= 1);
+            && (model == DEFAULT_MODEL
+                || (languages.len() <= 1
+                    && languages.iter().all(|lang| {
+                        locale(lang).is_some()
+                            && (model.strip_prefix("zoom-scribe-") == Some(lang.iso639_code())
+                                || (model == "zoom-scribe-en-pro" && lang.iso639_code() == "en"))
+                    })));
         if supported {
             LanguageSupport::Supported {
                 quality: LanguageQuality::NoData,
@@ -109,12 +118,8 @@ fn config(params: &ListenParams, live: bool) -> Result<Value, Error> {
         "diarization": params.num_speakers != Some(1),
     });
     if model == DEFAULT_MODEL {
-        let candidates: Vec<_> = params.languages.iter().filter_map(locale).collect();
-        let mut detection = json!({"mode": "continuous"});
-        if !candidates.is_empty() {
-            detection["candidate_languages"] = json!(candidates);
-        }
-        config["language_detection"] = detection;
+        // Ignore app language/candidate settings for continuous automatic detection.
+        config["language_detection"] = json!({"mode": "continuous"});
     } else {
         config["language"] = json!(params.languages.first().and_then(locale).unwrap_or_else(
             || {
@@ -138,7 +143,13 @@ fn config(params: &ListenParams, live: bool) -> Result<Value, Error> {
         config["vocabulary"] = json!({"phrases": phrases});
     }
     if live {
-        config["interim_results"] = json!(true);
+        config["interim_results"] = json!(
+            params
+                .custom_query
+                .as_ref()
+                .and_then(|query| query.get("zoom_interim_results"))
+                .is_none_or(|value| value != "false")
+        );
     } else {
         config["word_time_offsets"] = json!(true);
         config["channel_separation"] = json!(params.channels == 2);
@@ -183,4 +194,35 @@ fn speaker(value: &Value) -> Option<i32> {
         .as_str()
         .and_then(parse_speaker_id)
         .and_then(|id| i32::try_from(id).ok())
+}
+
+fn tracking_id() -> String {
+    format!("zoom_ai_community_anarlog_{}", uuid::Uuid::new_v4())
+}
+
+// Clean only the dedicated Chinese model; preserve Latin spaces and newlines.
+fn clean_text(text: &str, model: &str) -> String {
+    if model != "zoom-scribe-zh" {
+        return text.to_string();
+    }
+    fn chinese(c: char) -> bool {
+        matches!(c, '\u{3400}'..='\u{4dbf}' | '\u{4e00}'..='\u{9fff}' | '\u{f900}'..='\u{faff}' | '\u{20000}'..='\u{323af}')
+            || "，。！？；：、（）《》“”‘’".contains(c)
+    }
+    let mut output = String::new();
+    let mut pending = String::new();
+    let mut previous = None;
+    for c in text.trim().chars() {
+        if matches!(c, ' ' | '\t') {
+            pending.push(c);
+            continue;
+        }
+        if !(previous.is_some_and(chinese) && chinese(c)) {
+            output.push_str(&pending);
+        }
+        pending.clear();
+        output.push(c);
+        previous = Some(c);
+    }
+    output
 }

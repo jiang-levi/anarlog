@@ -60,6 +60,15 @@ pub(super) async fn split_batch_upload(
     segment_duration: Duration,
     provider: &str,
 ) -> crate::Result<SegmentedUpload> {
+    split_batch_upload_with_channels(file_path, segment_duration, provider, 1).await
+}
+
+pub(super) async fn split_batch_upload_with_channels(
+    file_path: &str,
+    segment_duration: Duration,
+    provider: &str,
+    channels: u8,
+) -> crate::Result<SegmentedUpload> {
     let failure = |message: &str| crate::BatchFailure::DirectRequestFailed {
         provider: provider.to_string(),
         message: message.to_string(),
@@ -76,7 +85,7 @@ pub(super) async fn split_batch_upload(
     let source = PathBuf::from(file_path);
     let output_dir = temp_dir.path().to_path_buf();
     let paths = tokio::task::spawn_blocking(move || {
-        anlg_mp3::encode_mono_segments(&source, &output_dir, segment_duration)
+        anlg_mp3::encode_segments(&source, &output_dir, segment_duration, u16::from(channels))
     })
     .await
     .map_err(|_error| {

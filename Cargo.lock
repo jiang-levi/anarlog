@@ -9435,6 +9435,7 @@ dependencies = [
  "audio-chunking",
  "audio-utils",
  "axum",
+ "base64 0.22.1",
  "data",
  "embedding",
  "futures-util",

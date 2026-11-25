@@ -240,6 +240,10 @@ pub trait RealtimeSttAdapter: Clone + Default + Send + Sync + 'static {
 
     fn build_auth_header(&self, api_key: Option<&str>) -> Option<(&'static str, String)>;
 
+    fn extra_headers(&self) -> Vec<(&'static str, String)> {
+        Vec::new()
+    }
+
     fn keep_alive_message(&self) -> Option<Message>;
 
     fn finalize_message(&self) -> Message;
@@ -265,6 +269,19 @@ pub trait RealtimeSttAdapter: Clone + Default + Send + Sync + 'static {
 }
 
 pub trait BatchSttAdapter: Clone + Default + Send + Sync + 'static {
+    /// None accepts existing containers unchanged. Extensions exclude the dot.
+    fn accepted_audio_extensions(&self) -> Option<&'static [&'static str]> {
+        None
+    }
+    /// A bounded compression fallback for local size errors or HTTP 413/415.
+    fn compression_retry_duration(&self) -> Option<std::time::Duration> {
+        None
+    }
+    fn preserve_upload_channels(&self) -> bool {
+        false
+    }
+    fn normalize_batch_response(&self, _response: &mut owhisper_interface::batch::Response) {}
+
     fn provider_name(&self) -> &'static str {
         "unknown"
     }
@@ -618,7 +635,11 @@ impl AdapterKind {
         {
             return kind;
         }
-        if host_matches(base_url, |host| host == "api.zoom.us") {
+        if url::Url::parse(base_url).ok().is_some_and(|url| {
+            url.host_str() == Some("api.zoom.us")
+                && (url.path() == "/v2/aiservices/scribe"
+                    || url.path().starts_with("/v2/aiservices/scribe/"))
+        }) {
             return Self::ZoomScribe;
         }
         if host_matches(base_url, |host| {

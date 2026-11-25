@@ -14,10 +14,25 @@ use crate::{
     adapter::{BatchFuture, BatchSttAdapter, ClientWithMiddleware, http::ensure_success},
 };
 
-// Match OpenWhispr's encoded-body cap, below the observed 65–72 MB gateway boundary.
+// Application cap for the complete JSON body, not a server acceptance guarantee.
+// Match OpenWhispr; historical probes observed a 65–72 MB gateway boundary.
 const MAX_REQUEST_BYTES: usize = 50 * 1024 * 1024;
 
 impl BatchSttAdapter for ZoomScribeAdapter {
+    fn accepted_audio_extensions(&self) -> Option<&'static [&'static str]> {
+        Some(&["wav", "mp3", "m4a", "mp4", "webm"])
+    }
+    fn compression_retry_duration(&self) -> Option<std::time::Duration> {
+        Some(std::time::Duration::from_secs(10 * 60))
+    }
+    fn preserve_upload_channels(&self) -> bool {
+        true
+    }
+
+    fn normalize_batch_response(&self, response: &mut Response) {
+        normalize_text(response);
+    }
+
     fn provider_name(&self) -> &'static str {
         "zoom_scribe"
     }
@@ -73,19 +88,12 @@ impl BatchSttAdapter for ZoomScribeAdapter {
                     "Zoom Scribe requires WAV, MP3, M4A, MP4, or WebM audio".into(),
                 )
             })?;
-            let body = json!({
-                "file": format!("data:{mime};base64,{}", STANDARD.encode(audio)),
-                "config": config,
-                "outputs": {"text_polishing": {"enabled": false}},
-            })
-            .to_string();
-            if body.len() > MAX_REQUEST_BYTES {
-                return Err(request_too_large());
-            }
+            let body = encoded_body(&audio, mime, config, MAX_REQUEST_BYTES)?;
             let response = client
                 .post(endpoint(base, "transcribe")?)
                 .bearer_auth(key)
                 .header("Content-Type", "application/json")
+                .header("x-zm-trackingid", super::tracking_id())
                 .body(body)
                 .send()
                 .await?;
@@ -102,10 +110,27 @@ impl BatchSttAdapter for ZoomScribeAdapter {
     }
 }
 
+pub(super) fn encoded_body(
+    audio: &[u8],
+    mime: &str,
+    config: Value,
+    limit: usize,
+) -> Result<String, Error> {
+    let body = json!({
+        "file": format!("data:{mime};base64,{}", STANDARD.encode(audio)),
+        "config": config,
+        "outputs": {"text_polishing": {"enabled": false}},
+    })
+    .to_string();
+    if body.len() > limit {
+        return Err(Error::RequestTooLarge { limit_bytes: limit });
+    }
+    Ok(body)
+}
+
 fn request_too_large() -> Error {
-    Error::UnexpectedStatus {
-        status: reqwest::StatusCode::PAYLOAD_TOO_LARGE,
-        body: "Zoom Scribe Fast requests must fit within 50 MiB after Base64 and JSON encoding; compress the recording and retry.".into(),
+    Error::RequestTooLarge {
+        limit_bytes: MAX_REQUEST_BYTES,
     }
 }
 
@@ -163,6 +188,7 @@ struct FastWord {
 
 fn convert(response: FastResponse, params: &ListenParams) -> Result<Response, Error> {
     let channels = params.channels;
+    let selected_model = super::resolve_model(params.model.as_deref());
     let mut alternatives: Vec<_> = (0..channels)
         .map(|_| Alternatives {
             transcript: String::new(),
@@ -211,10 +237,10 @@ fn convert(response: FastResponse, params: &ListenParams) -> Result<Response, Er
     let has_timing = alternatives
         .iter()
         .any(|alternative| !alternative.words.is_empty());
-    Ok(Response {
+    let mut result = Response {
         metadata: json!({
             "provider": "zoom_scribe", "request_id": response.request_id,
-            "duration": response.duration_sec, "model": response.model,
+            "duration": response.duration_sec, "model": selected_model, "provider_model": response.model,
             "timing_source": if has_timing { "provider" } else { "synthetic_text" },
         }),
         results: Results {
@@ -225,5 +251,22 @@ fn convert(response: FastResponse, params: &ListenParams) -> Result<Response, Er
                 })
                 .collect(),
         },
-    })
+    };
+    normalize_text(&mut result);
+    Ok(result)
+}
+
+fn normalize_text(response: &mut Response) {
+    let model = response.metadata["model"].as_str().unwrap_or("");
+    for channel in &mut response.results.channels {
+        for alternative in &mut channel.alternatives {
+            alternative.transcript = super::clean_text(&alternative.transcript, model);
+            for word in &mut alternative.words {
+                word.word = super::clean_text(&word.word, model);
+                if let Some(text) = &mut word.punctuated_word {
+                    *text = super::clean_text(text, model);
+                }
+            }
+        }
+    }
 }

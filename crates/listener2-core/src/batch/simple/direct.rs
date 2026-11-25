@@ -2,18 +2,18 @@ use std::path::{Path, PathBuf};
 use std::time::Duration;
 
 use owhisper_client::{
-    AdapterKind, AnarlogAdapter, AquaVoiceAdapter, ArgmaxAdapter, AssemblyAIAdapter,
-    AwsTranscribeAdapter, AzureSpeechAdapter, BatchSttAdapter, BatchUploadLimit, CartesiaAdapter,
-    CohereAdapter, DeepgramAdapter, ElevenLabsAdapter, FireworksAdapter, GladiaAdapter,
-    GoogleCloudAdapter, GoogleGenerativeAiAdapter, GroqAdapter, MetaAdapter, MistralAdapter,
-    OpenAIAdapter, OpenRouterAdapter, PyannoteAdapter, RevAiAdapter, SiliconFlowAdapter,
-    SmallestAIAdapter, SonioxAdapter, SpeechmaticsAdapter, TogetherAdapter, WisprFlowAdapter,
-    XaiAdapter, ZaiAdapter,
+    AdapterKind, AmazonBedrockAdapter, AnarlogAdapter, AquaVoiceAdapter, ArgmaxAdapter,
+    AssemblyAIAdapter, AwsTranscribeAdapter, AzureSpeechAdapter, BatchSttAdapter, BatchUploadLimit,
+    CartesiaAdapter, CohereAdapter, DeepgramAdapter, ElevenLabsAdapter, FireworksAdapter,
+    GladiaAdapter, GoogleCloudAdapter, GoogleGenerativeAiAdapter, GroqAdapter, MetaAdapter,
+    MistralAdapter, OpenAIAdapter, OpenRouterAdapter, PyannoteAdapter, RevAiAdapter,
+    SiliconFlowAdapter, SmallestAIAdapter, SonioxAdapter, SpeechmaticsAdapter, TogetherAdapter,
+    WisprFlowAdapter, XaiAdapter, ZaiAdapter, ZoomScribeAdapter,
 };
 use owhisper_interface::batch::{Alternatives, Channel, Response, Results};
 use tracing::Instrument;
 
-use super::super::upload::{audio_duration, segment_plan, split_batch_upload};
+use super::super::upload::{audio_duration, segment_plan, split_batch_upload_with_channels};
 use super::super::{
     BatchParams, BatchRunMode, BatchRunOutput, format_user_friendly_error, log_batch_failure,
     session_span,
@@ -78,27 +78,6 @@ pub(in crate::batch) async fn run_direct_batch_for_adapter_kind(
     }
 
     let limit = adapter_kind.batch_upload_limit(listen_params.model.as_deref());
-    if adapter_kind == AdapterKind::ZoomScribe
-        && !std::path::Path::new(&params.file_path)
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| {
-                matches!(
-                    extension.to_ascii_lowercase().as_str(),
-                    "wav" | "mp3" | "m4a" | "mp4" | "webm"
-                )
-            })
-    {
-        let duration = audio_duration(&params.file_path);
-        return run_segmented_batch::<owhisper_client::ZoomScribeAdapter>(
-            "zoom_scribe",
-            params,
-            listen_params,
-            limit.expect("Zoom Scribe has an upload limit").max_duration,
-            direct_batch_timeout_for_audio(duration),
-        )
-        .await;
-    }
 
     dispatch_batch!(adapter_kind, params, listen_params, limit, {
         Argmax => ArgmaxAdapter,
@@ -108,7 +87,7 @@ pub(in crate::batch) async fn run_direct_batch_for_adapter_kind(
         AssemblyAI => AssemblyAIAdapter,
         Fireworks => FireworksAdapter,
         OpenAI => OpenAIAdapter,
-        AmazonBedrock => owhisper_client::AmazonBedrockAdapter,
+        AmazonBedrock => AmazonBedrockAdapter,
         OpenRouter => OpenRouterAdapter,
         SiliconFlow => SiliconFlowAdapter,
         Zai => ZaiAdapter,
@@ -116,7 +95,7 @@ pub(in crate::batch) async fn run_direct_batch_for_adapter_kind(
         ElevenLabs => ElevenLabsAdapter,
         Pyannote => PyannoteAdapter,
         Mistral => MistralAdapter,
-        ZoomScribe => owhisper_client::ZoomScribeAdapter,
+        ZoomScribe => ZoomScribeAdapter,
         Meta => MetaAdapter,
         Anarlog => AnarlogAdapter,
         AquaVoice => AquaVoiceAdapter,
@@ -247,7 +226,31 @@ pub(super) async fn run_direct_batch<A: BatchSttAdapter>(
     let audio_duration = audio_duration(&params.file_path);
     let timeout = direct_batch_timeout_for_audio(audio_duration);
 
-    match segment_plan(&params.file_path, audio_duration, limit) {
+    let adapter = A::default();
+    let unsupported_container = adapter
+        .accepted_audio_extensions()
+        .is_some_and(|extensions| {
+            !Path::new(&params.file_path)
+                .extension()
+                .and_then(|ext| ext.to_str())
+                .is_some_and(|ext| {
+                    extensions
+                        .iter()
+                        .any(|accepted| ext.eq_ignore_ascii_case(accepted))
+                })
+        });
+    let plan = segment_plan(&params.file_path, audio_duration, limit)
+        .map(|duration| {
+            adapter
+                .compression_retry_duration()
+                .map_or(duration, |compression| duration.min(compression))
+        })
+        .or_else(|| {
+            unsupported_container
+                .then(|| adapter.compression_retry_duration())
+                .flatten()
+        });
+    match plan {
         Some(segment_duration) => {
             run_segmented_batch::<A>(provider, params, listen_params, segment_duration, timeout)
                 .await
@@ -263,8 +266,16 @@ async fn run_segmented_batch<A: BatchSttAdapter>(
     segment_duration: Duration,
     timeout: Duration,
 ) -> crate::Result<BatchRunOutput> {
-    let segments = split_batch_upload(&params.file_path, segment_duration, provider).await?;
-    listen_params.channels = 1;
+    if !A::default().preserve_upload_channels() {
+        listen_params.channels = 1;
+    }
+    let segments = split_batch_upload_with_channels(
+        &params.file_path,
+        segment_duration,
+        provider,
+        listen_params.channels,
+    )
+    .await?;
 
     let mut responses = Vec::with_capacity(segments.paths().len());
     for path in segments.paths() {
@@ -281,10 +292,12 @@ async fn run_segmented_batch<A: BatchSttAdapter>(
         responses.push(output.response);
     }
 
+    let mut response = merge_segment_responses(responses, segment_duration);
+    A::default().normalize_batch_response(&mut response);
     Ok(BatchRunOutput {
         session_id: params.session_id,
         mode: BatchRunMode::Direct,
-        response: merge_segment_responses(responses, segment_duration),
+        response,
     })
 }
 
@@ -293,6 +306,35 @@ pub(super) fn merge_segment_responses(
     responses: Vec<Response>,
     segment_duration: Duration,
 ) -> Response {
+    let channel_count = responses
+        .iter()
+        .map(|response| response.results.channels.len())
+        .max()
+        .unwrap_or(1);
+    if channel_count > 1 {
+        let mut grouped: Vec<Vec<Response>> = (0..channel_count).map(|_| Vec::new()).collect();
+        for response in responses {
+            let mut channels = response.results.channels.into_iter();
+            for group in &mut grouped {
+                group.push(Response {
+                    metadata: response.metadata.clone(),
+                    results: Results {
+                        channels: channels.next().into_iter().collect(),
+                    },
+                });
+            }
+        }
+        let mut merged = grouped
+            .into_iter()
+            .map(|group| merge_segment_responses(group, segment_duration));
+        let mut response = merged.next().expect("at least two channels");
+        for next in merged {
+            response.results.channels.extend(next.results.channels);
+        }
+        return response;
+    }
+    // Speaker numbers are offset between independent requests. Identity across
+    // chunks is intentionally not inferred, even when the same person returns.
     let mut metadata = serde_json::Value::Null;
     let mut speaker_labels = Vec::new();
     let mut speaker_segments = Vec::new();
@@ -459,28 +501,32 @@ async fn transcribe_with_compression_retry<A: BatchSttAdapter>(
     listen_params: &owhisper_interface::ListenParams,
 ) -> Result<Response, owhisper_client::Error> {
     let result = transcribe_with_rate_limit_retry(client, &params.file_path).await;
-    let rejected_audio = matches!(
-        &result,
-        Err(owhisper_client::Error::UnexpectedStatus { status, .. })
-            if matches!(status.as_u16(), 413 | 415)
-    );
-    if provider != "zoom_scribe" || !rejected_audio {
+    let rejected_audio = matches!(&result, Err(owhisper_client::Error::RequestTooLarge { .. }))
+        || matches!(
+            &result, Err(owhisper_client::Error::UnexpectedStatus { status, .. }) if matches!(status.as_u16(), 413 | 415)
+        );
+    let Some(duration) = A::default()
+        .compression_retry_duration()
+        .filter(|_| rejected_audio)
+    else {
         return result;
-    }
-
-    let duration = AdapterKind::ZoomScribe
-        .batch_upload_limit(None)
-        .expect("Zoom Scribe has an upload limit")
-        .max_duration;
-    let compressed = split_batch_upload(&params.file_path, duration, provider)
-        .await
-        .map_err(|_| {
-            owhisper_client::Error::AudioProcessing(
-                "Anarlog couldn't compress this recording for Zoom Scribe.".into(),
-            )
-        })?;
+    };
     let mut retry_params = listen_params.clone();
-    retry_params.channels = 1;
+    if !A::default().preserve_upload_channels() {
+        retry_params.channels = 1;
+    }
+    let compressed = split_batch_upload_with_channels(
+        &params.file_path,
+        duration,
+        provider,
+        retry_params.channels,
+    )
+    .await
+    .map_err(|_| {
+        owhisper_client::Error::AudioProcessing(
+            "Anarlog couldn't compress this recording for transcription.".into(),
+        )
+    })?;
     let retry_client = owhisper_client::BatchClient::<A>::builder()
         .api_base(params.base_url.clone())
         .api_key(params.api_key.clone())
@@ -491,7 +537,9 @@ async fn transcribe_with_compression_retry<A: BatchSttAdapter>(
         responses
             .push(transcribe_with_rate_limit_retry(&retry_client, &path.to_string_lossy()).await?);
     }
-    Ok(merge_segment_responses(responses, duration))
+    let mut response = merge_segment_responses(responses, duration);
+    A::default().normalize_batch_response(&mut response);
+    Ok(response)
 }
 
 async fn transcribe_with_rate_limit_retry<A: BatchSttAdapter>(
@@ -567,4 +615,47 @@ pub(super) fn direct_batch_timeout_for_audio(audio_duration: Option<Duration>) -
     timeout
         .max(DIRECT_BATCH_TIMEOUT_FLOOR)
         .min(DIRECT_BATCH_TIMEOUT_CEILING)
+}
+
+#[cfg(test)]
+mod review_tests {
+    use super::*;
+    #[test]
+    fn segmented_stereo_merge_keeps_both_channels_and_separate_speaker_offsets() {
+        let response = |index| Response {
+            metadata: serde_json::json!({}),
+            results: Results {
+                channels: (0..2)
+                    .map(|channel| Channel {
+                        alternatives: vec![Alternatives {
+                            transcript: format!("chunk{index}-channel{channel}"),
+                            confidence: 1.0,
+                            words: vec![owhisper_interface::batch::Word {
+                                word: "word".into(),
+                                punctuated_word: None,
+                                start: 0.2,
+                                end: 0.5,
+                                confidence: 1.0,
+                                speaker: Some(1),
+                                channel,
+                            }],
+                        }],
+                    })
+                    .collect(),
+            },
+        };
+        let merged =
+            merge_segment_responses(vec![response(0), response(1)], Duration::from_secs(10));
+        assert_eq!(merged.results.channels.len(), 2);
+        for (i, channel) in merged.results.channels.iter().enumerate() {
+            let alternative = &channel.alternatives[0];
+            assert_eq!(
+                alternative.transcript,
+                format!("chunk0-channel{i} chunk1-channel{i}")
+            );
+            assert_eq!(alternative.words[1].start, 10.2);
+            assert_eq!(alternative.words[1].channel, i as i32);
+            assert_ne!(alternative.words[0].speaker, alternative.words[1].speaker);
+        }
+    }
 }

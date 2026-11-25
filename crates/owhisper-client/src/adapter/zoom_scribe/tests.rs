@@ -55,6 +55,7 @@ fn zoom_scribe_replaces_partials_and_preserves_final_timing_and_speaker() {
     assert_eq!(channel.alternatives[0].words[0].speaker, Some(2));
     assert_eq!(channel.alternatives[0].words[0].end, 2.8);
     assert_eq!(channel.alternatives[0].languages, ["en"]);
+    adapter.finalize_message();
     let closed = adapter.parse_response(r#"{"type":"session.closed"}"#);
     assert!(matches!(
         closed[0],
@@ -98,11 +99,11 @@ fn zoom_scribe_rejects_incompatible_languages_and_builds_supported_locales() {
     assert!(en["config"].get("language_detection").is_none());
     let multi = initial(&["de-DE", "ko"], "zoom-scribe-multilingual").unwrap();
     assert_eq!(
-        multi["config"]["language_detection"]["candidate_languages"],
-        json!(["de-DE", "ko-KR"])
+        multi["config"]["language_detection"],
+        json!({"mode": "continuous"})
     );
     assert!(initial(&["zh"], "zoom-scribe-en").is_none());
-    assert!(initial(&["ru"], "zoom-scribe-multilingual").is_none());
+    assert!(initial(&["ru"], "zoom-scribe-multilingual").is_some());
     assert!(initial(&["ko"], "zoom-scribe-ko").is_none());
 }
 
@@ -117,7 +118,7 @@ fn zoom_scribe_reports_fatal_errors_without_treating_warnings_as_final_results()
     assert!(matches!(
         &adapter.parse_response(r#"{"type":"error","error":{"code":"UNSUPPORTED_MODEL","fatal":true,"message":"Model unavailable"}}"#)[0],
         StreamResponse::ErrorResponse { provider, error_message, .. }
-            if provider == "zoom_scribe" && error_message == "Model unavailable"
+            if provider == "zoom_scribe" && error_message == "UNSUPPORTED_MODEL: Model unavailable"
     ));
 }
 
@@ -327,16 +328,17 @@ async fn zoom_scribe_fast_rejects_encoded_requests_over_50_mib_before_upload() {
         .api_key("test-key")
         .build();
     // The first file fits after Base64 alone; its JSON envelope pushes it over.
-    // The second can be rejected from its raw length before allocating the body.
-    for raw_bytes in [39_321_600, 39_321_601] {
+    // Keep one real production-limit check; the smaller exact-boundary test covers
+    // envelope behavior without repeatedly allocating large buffers.
+    for raw_bytes in [39_321_600] {
         file.as_file().set_len(raw_bytes).unwrap();
         let error = client.transcribe_file(file.path()).await.unwrap_err();
-        let crate::Error::UnexpectedStatus { status, body } = error else {
-            panic!("oversized audio must be rejected before connecting");
-        };
-        assert_eq!(status, reqwest::StatusCode::PAYLOAD_TOO_LARGE);
-        assert!(body.contains("50 MiB"));
-        assert!(body.contains("compress"));
+        assert!(matches!(
+            error,
+            crate::Error::RequestTooLarge {
+                limit_bytes: 52_428_800
+            }
+        ));
     }
 }
 
@@ -392,4 +394,164 @@ fn zoom_scribe_routes_official_and_custom_endpoints_without_leaking_routing_para
         assert_eq!(url.path(), "/v2/aiservices/scribe/live");
         assert!(!url.query_pairs().any(|(key, _)| key == "provider"));
     }
+}
+
+#[test]
+fn zoom_scribe_auto_detection_and_dictation_interim_are_independent_of_meeting_speakers() {
+    let adapter = ZoomScribeAdapter::default();
+    let mut params = ListenParams {
+        model: Some("zoom-scribe-multilingual".into()),
+        num_speakers: Some(1),
+        languages: vec!["en".parse().unwrap(), "ru".parse().unwrap()],
+        ..Default::default()
+    };
+    let message = |params: &ListenParams| {
+        serde_json::from_str::<Value>(
+            &adapter
+                .initial_message(None, params, 1)
+                .unwrap()
+                .into_text()
+                .unwrap(),
+        )
+        .unwrap()
+    };
+    assert_eq!(message(&params)["config"]["interim_results"], true);
+    assert_eq!(
+        message(&params)["config"]["language_detection"],
+        json!({"mode":"continuous"})
+    );
+    params.custom_query = Some(std::collections::HashMap::from([(
+        "zoom_interim_results".into(),
+        "false".into(),
+    )]));
+    assert_eq!(message(&params)["config"]["interim_results"], false);
+    let first = adapter.extra_headers();
+    let second = adapter.extra_headers();
+    assert_eq!(first[0].0, "x-zm-trackingid");
+    assert!(first[0].1.starts_with("zoom_ai_community_anarlog_"));
+    assert_ne!(first[0].1, second[0].1);
+}
+
+#[test]
+fn zoom_scribe_chinese_cleaning_preserves_other_models_and_newlines() {
+    let text = "你 好 ， 世 界 hello world\n新 的 一 行 [Speaker 1]";
+    assert_eq!(
+        super::clean_text(text, "zoom-scribe-zh"),
+        "你好，世界 hello world\n新的一行 [Speaker 1]"
+    );
+    assert_eq!(super::clean_text(text, "zoom-scribe-multilingual"), text);
+    assert_eq!(
+        super::clean_text("  hello world\n", "zoom-scribe-en"),
+        "  hello world\n"
+    );
+    let adapter = ZoomScribeAdapter::default();
+    let params = ListenParams {
+        model: Some("zoom-scribe-zh".into()),
+        ..Default::default()
+    };
+    adapter.initial_message(None, &params, 1);
+    let messages = adapter.parse_response(r#"{"type":"transcription.delta","delta":"你 好"}"#);
+    let StreamResponse::TranscriptResponse { channel, .. } = &messages[0] else {
+        panic!("transcript expected")
+    };
+    assert_eq!(channel.alternatives[0].transcript, "你好");
+    assert_eq!(channel.alternatives[0].words[0].word, "你好");
+}
+
+#[test]
+fn zoom_scribe_encoded_body_caps_the_actual_json_envelope() {
+    let audio = [0u8; 12];
+    let body =
+        super::batch::encoded_body(&audio, "audio/wav", json!({"model":"zoom-scribe-zh"}), 1024)
+            .unwrap();
+    assert!(
+        super::batch::encoded_body(
+            &audio,
+            "audio/wav",
+            json!({"model":"zoom-scribe-zh"}),
+            body.len()
+        )
+        .is_ok()
+    );
+    assert!(matches!(
+        super::batch::encoded_body(
+            &audio,
+            "audio/wav",
+            json!({"model":"zoom-scribe-zh"}),
+            body.len() - 1
+        ),
+        Err(crate::Error::RequestTooLarge { .. })
+    ));
+}
+
+#[test]
+fn zoom_scribe_does_not_infer_unrelated_zoom_endpoints() {
+    assert_ne!(
+        crate::AdapterKind::from_url_and_languages("https://api.zoom.us/v2/meetings", &[], None),
+        crate::AdapterKind::ZoomScribe
+    );
+}
+
+#[tokio::test]
+async fn zoom_scribe_fast_cleans_chinese_transcript_and_words_without_changing_timing() {
+    use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+    let server = MockServer::start().await;
+    Mock::given(method("POST")).respond_with(ResponseTemplate::new(200).set_body_json(json!({
+        "result": { "text_display": "你 好 ， hello world\n新 的 一 行", "segments": [
+            {"text":"你 好", "start":0.1,"end":0.8,"channel":0,"words":[{"word":"你 好","start":0.2,"end":0.7}]}
+        ]}
+    }))).mount(&server).await;
+    let file = tempfile::NamedTempFile::new().unwrap();
+    std::fs::write(file.path(), b"RIFF\0\0\0\0WAVE").unwrap();
+    let response = BatchClient::<ZoomScribeAdapter>::builder()
+        .api_base(server.uri())
+        .api_key("test-key")
+        .params(ListenParams {
+            model: Some("zoom-scribe-zh".into()),
+            ..Default::default()
+        })
+        .build()
+        .transcribe_file(file.path())
+        .await
+        .unwrap();
+    let alternative = &response.results.channels[0].alternatives[0];
+    assert_eq!(alternative.transcript, "你好， hello world\n新的一行");
+    assert_eq!(alternative.words[0].word, "你好");
+    assert_eq!(
+        alternative.words[0].punctuated_word.as_deref(),
+        Some("你好")
+    );
+    assert_eq!(
+        (alternative.words[0].start, alternative.words[0].end),
+        (0.2, 0.7)
+    );
+    let requests = server.received_requests().await.unwrap();
+    assert!(
+        requests[0].headers["x-zm-trackingid"]
+            .to_str()
+            .unwrap()
+            .starts_with("zoom_ai_community_anarlog_")
+    );
+}
+
+#[test]
+fn zoom_scribe_unexpected_session_close_requests_recovery_and_fork_resets_closing_state() {
+    let adapter = ZoomScribeAdapter::default();
+    assert!(matches!(
+        adapter.parse_response(r#"{"type":"session.closed"}"#)[0],
+        StreamResponse::ErrorResponse { .. }
+    ));
+    adapter.finalize_message();
+    assert!(matches!(
+        adapter.parse_response(r#"{"type":"session.closed"}"#)[0],
+        StreamResponse::TranscriptResponse {
+            from_finalize: true,
+            ..
+        }
+    ));
+    let next = adapter.fork_session();
+    assert!(matches!(
+        next.parse_response(r#"{"type":"session.closed"}"#)[0],
+        StreamResponse::ErrorResponse { .. }
+    ));
 }

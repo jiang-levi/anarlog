@@ -1,5 +1,7 @@
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("encoded audio request exceeds the application limit of {limit_bytes} bytes")]
+    RequestTooLarge { limit_bytes: usize },
     #[error("audio processing error: {0}")]
     AudioProcessing(String),
     #[error("provider failure: {message}")]

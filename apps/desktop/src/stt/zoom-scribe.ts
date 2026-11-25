@@ -1,3 +1,5 @@
+// Keep the standalone choices aligned with crates/owhisper-client/src/adapter/zoom_scribe/mod.rs.
+// Korean is available through Multilingual, not a verified standalone model.
 export const ZOOM_SCRIBE_LANGUAGES = [
   "en",
   "ar",
@@ -21,6 +23,11 @@ export function getZoomScribeTranscriptionLanguages(
   model: string | null | undefined,
   languages: readonly string[],
 ): string[] {
+  if (
+    provider === "zoom_scribe" &&
+    (!model || model === "zoom-scribe-multilingual")
+  )
+    return [];
   const language =
     provider === "zoom_scribe"
       ? (getZoomScribeLanguage(model) ??

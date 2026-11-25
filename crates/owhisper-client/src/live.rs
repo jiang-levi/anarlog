@@ -130,6 +130,9 @@ impl<A: RealtimeSttAdapter> ListenClientBuilder<A> {
             {
                 request = request.with_header(header_name, header_value);
             }
+            for (name, value) in adapter.extra_headers() {
+                request = request.with_header(name, value);
+            }
             if let Some(protocol) = adapter.websocket_subprotocol() {
                 request = request.with_sub_protocol(protocol);
             }

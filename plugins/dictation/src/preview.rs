@@ -84,11 +84,26 @@ impl Drop for Preview {
 }
 
 async fn run(
-    config: PreviewConfig,
+    mut config: PreviewConfig,
     receiver: mpsc::Receiver<ListenClientInput>,
     updates: &Channel<RecordingUpdate>,
 ) -> Result<String, ()> {
     use owhisper_client::*;
+    // This module is explicitly dictation; isolated meeting microphones can also
+    // be mono with num_speakers=1, so those values cannot identify this context.
+    if config.provider == "zoom_scribe"
+        && config
+            .params
+            .model
+            .as_deref()
+            .is_none_or(|model| model == "zoom-scribe-multilingual")
+    {
+        config
+            .params
+            .custom_query
+            .get_or_insert_with(Default::default)
+            .insert("zoom_interim_results".into(), "false".into());
+    }
     let url = url::Url::parse(&config.base_url).map_err(|_| ())?;
     if !matches!(url.scheme(), "http" | "https" | "ws" | "wss") || url.host_str().is_none() {
         return Err(());
@@ -126,9 +141,7 @@ async fn run(
         "smallestai" => listen::<SmallestAIAdapter>(config, receiver, updates).await,
         "fireworks" => listen::<FireworksAdapter>(config, receiver, updates).await,
         "mistral" => listen::<MistralAdapter>(config, receiver, updates).await,
-        "zoom_scribe" => {
-            listen::<owhisper_client::ZoomScribeAdapter>(config, receiver, updates).await
-        }
+        "zoom_scribe" => listen::<ZoomScribeAdapter>(config, receiver, updates).await,
         "xai" => listen::<XaiAdapter>(config, receiver, updates).await,
         "argmax" => listen::<ArgmaxAdapter>(config, receiver, updates).await,
         "nari" => listen::<NariAdapter>(config, receiver, updates).await,
@@ -148,6 +161,8 @@ async fn listen<A: RealtimeSttAdapter>(
     config.params.sample_rate = 16_000;
     let mut transcript = PreviewTranscript {
         append_turns: config.provider == "cartesia",
+        chinese_spacing: config.provider == "zoom_scribe"
+            && config.params.model.as_deref() == Some("zoom-scribe-zh"),
         ..Default::default()
     };
     let client = ListenClient::builder()
@@ -186,7 +201,7 @@ async fn listen<A: RealtimeSttAdapter>(
                 if let Some(update) = transcript.update(response) { updates.send(update).map_err(|_| ())?; }
                 if finalizing && finished {
                     if transcript.partial.as_ref().is_some_and(|(_, text)| !text.is_empty()) { return Err(()); }
-                    return Ok(transcript.segments.iter().map(|segment| segment.1.as_str()).collect::<Vec<_>>().join(" "));
+                    return Ok(transcript.text());
                 }
             }
         }
@@ -196,11 +211,26 @@ async fn listen<A: RealtimeSttAdapter>(
 #[derive(Default)]
 struct PreviewTranscript {
     append_turns: bool,
+    chinese_spacing: bool,
     segments: Vec<(f64, String)>,
     partial: Option<(f64, String)>,
 }
 
 impl PreviewTranscript {
+    fn text(&self) -> String {
+        let text = self
+            .segments
+            .iter()
+            .map(|segment| segment.1.as_str())
+            .collect::<Vec<_>>()
+            .join(" ");
+        if self.chinese_spacing {
+            owhisper_client::ZoomScribeAdapter::normalize_transcript(&text, "zoom-scribe-zh")
+        } else {
+            text
+        }
+    }
+
     fn update(&mut self, response: StreamResponse) -> Option<RecordingUpdate> {
         let StreamResponse::TranscriptResponse {
             start,
@@ -241,12 +271,7 @@ impl PreviewTranscript {
             self.partial = Some((start, text));
         }
         Some(RecordingUpdate::Transcript {
-            text: self
-                .segments
-                .iter()
-                .map(|segment| segment.1.as_str())
-                .collect::<Vec<_>>()
-                .join(" "),
+            text: self.text(),
             partial: self
                 .partial
                 .as_ref()
@@ -493,5 +518,23 @@ mod tests {
             .unwrap()
             .unwrap();
         assert_eq!(values.lock().unwrap().len(), 2);
+    }
+}
+
+#[cfg(test)]
+mod chinese_join_tests {
+    use super::*;
+    #[test]
+    fn completed_chinese_turns_join_consistently_without_merging_latin_words() {
+        let transcript = PreviewTranscript {
+            chinese_spacing: true,
+            segments: vec![
+                (0.0, "你 好".into()),
+                (1.0, "世 界 hello".into()),
+                (2.0, "world".into()),
+            ],
+            ..Default::default()
+        };
+        assert_eq!(transcript.text(), "你好世界 hello world");
     }
 }

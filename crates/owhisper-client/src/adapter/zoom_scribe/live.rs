@@ -75,16 +75,27 @@ impl RealtimeSttAdapter for ZoomScribeAdapter {
         key.map(|key| ("Authorization", format!("Bearer {key}")))
     }
 
+    fn extra_headers(&self) -> Vec<(&'static str, String)> {
+        vec![("x-zm-trackingid", super::tracking_id())]
+    }
+
     fn keep_alive_message(&self) -> Option<Message> {
         None
     }
 
     fn finalize_message(&self) -> Message {
+        self.session
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .closing = true;
         segment::message(json!({"type": "session.close"}))
     }
 
     fn initial_message(&self, _: Option<&str>, params: &ListenParams, _: u8) -> Option<Message> {
-        *self.session.lock().unwrap_or_else(|e| e.into_inner()) = Session::default();
+        *self.session.lock().unwrap_or_else(|e| e.into_inner()) = Session {
+            model: super::resolve_model(params.model.as_deref()).to_string(),
+            ..Session::default()
+        };
         Some(segment::message(json!({
             "type": "session.update",
             "config": config(params, true).ok()?,
@@ -132,8 +143,13 @@ impl RealtimeSttAdapter for ZoomScribeAdapter {
                     session.start = end;
                     session.end = end;
                 }
-                let mut response =
-                    segment::response(text, start, end, is_final, speaker(&value["speaker"]));
+                let mut response = segment::response(
+                    &super::clean_text(text, &session.model),
+                    start,
+                    end,
+                    is_final,
+                    speaker(&value["speaker"]),
+                );
                 if let StreamResponse::TranscriptResponse { channel, .. } = &mut response
                     && let Some(language) = value["language"].as_str()
                 {
@@ -141,9 +157,36 @@ impl RealtimeSttAdapter for ZoomScribeAdapter {
                 }
                 vec![response]
             }
-            "session.closed" => vec![segment::finished(session.end)],
+            "session.closed" if session.closing => vec![segment::finished(session.end)],
+            // A provider-side session limit/idle close is not a successful user
+            // finalize. Surface it so the listener supervisor can reconnect/replay.
+            "session.closed" => vec![segment::error(
+                "zoom_scribe",
+                &json!({
+                    "message": "Zoom Scribe session ended unexpectedly; reconnect transcription"
+                }),
+            )],
             "error" if value["error"]["fatal"] != false => {
-                vec![segment::error("zoom_scribe", &value["error"])]
+                let mut error = value["error"].clone();
+                if let Some(code) = error["code"].as_str() {
+                    error["message"] = json!(format!(
+                        "{}: {}",
+                        code,
+                        error["message"].as_str().unwrap_or("Zoom Scribe error")
+                    ));
+                }
+                vec![segment::error("zoom_scribe", &error)]
+            }
+            "error" => {
+                // Codes only: server messages can include request content.
+                let code = value["error"]["code"].as_str().unwrap_or("");
+                let safe_code: String = code
+                    .chars()
+                    .filter(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-'))
+                    .take(80)
+                    .collect();
+                tracing::debug!(code = safe_code, "zoom_scribe_nonfatal_error");
+                vec![]
             }
             _ => vec![],
         }

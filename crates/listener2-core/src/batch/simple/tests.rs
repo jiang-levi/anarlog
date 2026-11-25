@@ -960,3 +960,90 @@ async fn zoom_scribe_compresses_unknown_containers_and_gateway_rejections() {
     }
     server.abort();
 }
+
+#[tokio::test]
+async fn zoom_scribe_preserves_stereo_through_conversion_and_413_415_retry() {
+    use anlg_audio_utils::Source;
+    use axum::{Json, routing::post};
+    use base64::{Engine, engine::general_purpose::STANDARD};
+    for rejection in [
+        StatusCode::PAYLOAD_TOO_LARGE,
+        StatusCode::UNSUPPORTED_MEDIA_TYPE,
+    ] {
+        let app = Router::new().route(
+            "/transcribe",
+            post(move |Json(payload): Json<serde_json::Value>| async move {
+                use axum::response::IntoResponse;
+                let audio = payload["file"].as_str().unwrap();
+                if audio.starts_with("data:audio/wav;") {
+                    return rejection.into_response();
+                }
+                assert_eq!(payload["config"]["channel_separation"], true);
+                let bytes = STANDARD.decode(audio.split_once(',').unwrap().1).unwrap();
+                let compressed = tempfile::Builder::new().suffix(".mp3").tempfile().unwrap();
+                std::fs::write(compressed.path(), bytes).unwrap();
+                let decoded = anlg_audio_utils::source_from_path(compressed.path()).unwrap();
+                assert_eq!(u16::from(decoded.channels()), 2);
+                Json(serde_json::json!({"result":{"segments":[
+                    {"start":0.1,"end":0.4,"text":"microphone", "channel":0,"speaker":"Speaker 1"},
+                    {"start":0.5,"end":0.9,"text":"system", "channel":1,"speaker":"Speaker 2"}
+                ]}}))
+                .into_response()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        for suffix in [".unknown", ".wav"] {
+            let source = tempfile::Builder::new().suffix(suffix).tempfile().unwrap();
+            let mut wav = hound::WavWriter::create(
+                source.path(),
+                hound::WavSpec {
+                    channels: 2,
+                    sample_rate: 16000,
+                    bits_per_sample: 16,
+                    sample_format: hound::SampleFormat::Int,
+                },
+            )
+            .unwrap();
+            for i in 0..16000 {
+                wav.write_sample((i % 1000) as i16).unwrap();
+                wav.write_sample(-(i % 1700) as i16).unwrap();
+            }
+            wav.finalize().unwrap();
+            let output = run_direct_batch_for_adapter_kind(
+                owhisper_client::AdapterKind::ZoomScribe,
+                BatchParams {
+                    session_id: "stereo-review".into(),
+                    provider: super::super::BatchProvider::ZoomScribe,
+                    file_path: source.path().to_string_lossy().into_owned(),
+                    model: Some("zoom-scribe-multilingual".into()),
+                    base_url: format!("http://{address}"),
+                    api_key: "test-key".into(),
+                    languages: vec![],
+                    keywords: vec![],
+                    num_speakers: None,
+                    min_speakers: None,
+                    max_speakers: None,
+                    known_speakers: vec![],
+                },
+                owhisper_interface::ListenParams {
+                    channels: 2,
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+            assert_eq!(output.response.results.channels.len(), 2);
+            for (i, text) in ["microphone", "system"].iter().enumerate() {
+                let alternative = &output.response.results.channels[i].alternatives[0];
+                assert_eq!(&alternative.transcript, text);
+                assert_eq!(alternative.words[0].channel, i as i32);
+            }
+            assert!(source.path().exists());
+        }
+        server.abort();
+    }
+}

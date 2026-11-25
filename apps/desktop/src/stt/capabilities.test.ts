@@ -387,8 +387,8 @@ describe("getLiveTranscriptionConfig", () => {
       provider: "zoom_scribe",
       model: "zoom-scribe-multilingual",
       languages: ["en", "zh"],
-      expected: { languages: ["en", "zh"], transcriptionMode: undefined },
-      checksLiveLanguages: true,
+      expected: { languages: [], transcriptionMode: undefined },
+      checksLiveLanguages: false,
     },
     {
       provider: "local_file",
