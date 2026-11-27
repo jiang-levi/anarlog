@@ -45,6 +45,17 @@ pub struct ZoomScribeAdapter {
 }
 
 impl ZoomScribeAdapter {
+    /// Apply dictation preview policy to the same resolved model sent to Scribe.
+    /// Meeting callers do not use this hook and retain interim captions.
+    pub fn configure_dictation(params: &mut ListenParams) {
+        if resolve_model(params.model.as_deref()) == DEFAULT_MODEL {
+            params
+                .custom_query
+                .get_or_insert_with(Default::default)
+                .insert("zoom_interim_results".into(), "false".into());
+        }
+    }
+
     /// The dictation UI also joins completed turns; apply the same model-specific rules there.
     pub fn normalize_transcript(text: &str, model: &str) -> String {
         clean_text(text, model)

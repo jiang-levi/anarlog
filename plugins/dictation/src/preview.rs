@@ -91,18 +91,8 @@ async fn run(
     use owhisper_client::*;
     // This module is explicitly dictation; isolated meeting microphones can also
     // be mono with num_speakers=1, so those values cannot identify this context.
-    if config.provider == "zoom_scribe"
-        && config
-            .params
-            .model
-            .as_deref()
-            .is_none_or(|model| model == "zoom-scribe-multilingual")
-    {
-        config
-            .params
-            .custom_query
-            .get_or_insert_with(Default::default)
-            .insert("zoom_interim_results".into(), "false".into());
+    if config.provider == "zoom_scribe" {
+        ZoomScribeAdapter::configure_dictation(&mut config.params);
     }
     let url = url::Url::parse(&config.base_url).map_err(|_| ())?;
     if !matches!(url.scheme(), "http" | "https" | "ws" | "wss") || url.host_str().is_none() {

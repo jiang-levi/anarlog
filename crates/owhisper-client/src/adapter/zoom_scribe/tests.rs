@@ -420,11 +420,24 @@ fn zoom_scribe_auto_detection_and_dictation_interim_are_independent_of_meeting_s
         message(&params)["config"]["language_detection"],
         json!({"mode":"continuous"})
     );
-    params.custom_query = Some(std::collections::HashMap::from([(
-        "zoom_interim_results".into(),
-        "false".into(),
-    )]));
-    assert_eq!(message(&params)["config"]["interim_results"], false);
+    for model in [
+        None,
+        Some(""),
+        Some("cloud"),
+        Some("zoom-scribe-multilingual"),
+    ] {
+        params.model = model.map(str::to_string);
+        params.custom_query = None;
+        ZoomScribeAdapter::configure_dictation(&mut params);
+        let update = message(&params);
+        assert_eq!(update["config"]["model"], "zoom-scribe-multilingual");
+        assert_eq!(update["config"]["interim_results"], false);
+    }
+    params.model = Some("zoom-scribe-en".into());
+    params.languages.clear();
+    params.custom_query = None;
+    ZoomScribeAdapter::configure_dictation(&mut params);
+    assert_eq!(message(&params)["config"]["interim_results"], true);
     let first = adapter.extra_headers();
     let second = adapter.extra_headers();
     assert_eq!(first[0].0, "x-zm-trackingid");
